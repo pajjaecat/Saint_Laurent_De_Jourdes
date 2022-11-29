@@ -24,6 +24,8 @@ py_folder = 'py_files/'
 
 Δt = 1 / 6  # Time frequency 10mn ==> 1Hour/6
 
+train_split_date = '2021 12 31 23:50' # Date of training+Validation split data Lower bond 
+trainVal_split_date = '2021 06 01'     # lower date to split training and validation data
 
 ##############################         FUNCTIONS          #########################################
 
