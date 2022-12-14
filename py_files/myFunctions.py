@@ -27,7 +27,7 @@ py_folder = 'py_files/'
 
 train_split_date = '2021 12 31 23:50' # Date of training+Validation split data Lower bond 
 trainVal_split_date = '2021 06 01'     # lower date to split training and validation data
-
+testSet_end_date = '2022 06 02'
 
 
 ##############################         FUNCTIONS          #########################################
@@ -738,23 +738,26 @@ Output:
 
 
 
-def createDict_prodHtBt_Load(df_pred_in, cur_max_hvProd, coef_add_bt, 
-                             sum_max_p_mw_StLaurent_prodBT,P0100_max=4.):
+def createDict_prodHtBt_Load(df_pred_in, 
+                             cur_max_hvProd, 
+                             coef_add_bt, 
+                             sum_max_p_mw_StLaurent_prodBT,
+                             P0100_max=4.):
     """
     Create a dictionary that will be send to the local space of the parallele engines.
     
     
     Parameters: 
     -----------
-    df_pred: pd.dataframe
-        Dataframe of Total lower voltage producer, load demand and all the Hihger voltage 
-        produccer in lower level network.
+    df_pred_in: pd.dataframe
+        Dataframe (Predicted values) of Total lower voltage producer, load demand and all 
+        the Hihger voltage producer in lower level network.
     cur_max_hvProd: int
-        Value of maximum output Power of the HV producer in Mw
+        Value of maximum output Power of the controlled HV producer in Mw
     coef_add_bt : Int (default=0) 
         Value of the added output power for all the LV producers in Mw
-    sum_max_p_mw_StLaurent_prodBT
-        
+    sum_max_p_mw_StLaurent_prodBT:
+        .....
     P0100_max: (int)
         Maximum output value in Mw of the controled producer
 
@@ -813,10 +816,6 @@ def robustPersistence(df_out_block_pf_opf:pandas.core.frame.DataFrame ,
     -----------
     df_out_block_pf_opf: (Dataframe)
         Output of the block pf opf
-    run_periodIndex:
-        Total number of periods to run simulation for. The number of period each engine 
-        will work on is therfore given by len(run_periodIndex)/n where n is the nuber of 
-        engines
     df_P0100_no_control : Dataframe
         Dataframe of P0100 with no control
     cur_max_hvProd: int
@@ -886,6 +885,6 @@ def block_prod(df_out_block_pf_opf: pandas.core.frame.DataFrame,
     df_P0100_controled = df_out_block_pf_opf.loc[per_index2[starting_index:], 'P0100']
     
     df_out_block_pf_opf.loc[per_index2[starting_index:], ['P0100']] = (np.minimum(df_P0100_no_control_upscaled,
-                                                                               df_P0100_controled)
-                                                                   )
+                                                                                  df_P0100_controled)
+                                                                      )
         

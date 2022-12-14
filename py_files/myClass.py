@@ -1,10 +1,12 @@
-import pandapower, pandas, numpy, ipyparallel
+import pandapower, pandas, numpy, ipyparallel, os, joblib, seaborn
 
 pd = pandas
 np = numpy 
 pp = pandapower
 ipp = ipyparallel
+sbn = seaborn
 
+Δt=1/6
 ##############################         Class          #########################################
 class CreateParEngines:
     
@@ -27,16 +29,17 @@ class CreateParEngines:
                               parameters_dict: dict, 
                               nb_exec: int ):
         """
-        Send variables to the local space of each parallem engine. 
+        Send variables to the local space of each parallel engine. 
         
         
         Parameters
         -----------
         run_periodIndex:
             Total number of periods to run simulation for. The number of period each engine 
-            will work on is therfore given by len(run_periodIndex)/n where n is the nuber of 
+            will work on is therfore given by len(run_periodIndex)/n where n is the number of 
             engines
-        opf_status : Optimal power flow status. 2 values are possible
+        opf_status : Optimal power flow status. 
+            2 values are possible
             False (Boolean) ==> Run power flow
             'Both' (str)    ==> Run optimal power flow or power flow depending on the situation
         dict_df_sgenLoad: (dict)
@@ -179,17 +182,20 @@ class CreateParEngines:
         
 
 class InitNetwork:
+    """
+    Initiate both the Higher and lower level  Network.
+    
+    Parameters: 
+    -----------
+        higherNet: Higher level network
+        LowerNet : Lower level Network 
+    """
     
     def __init__(self, 
                higherNet:pp.auxiliary.pandapowerNet, 
                LowerNet:pp.auxiliary.pandapowerNet 
                 ):
-        """
-        Parameters: 
-        -----------
-            higherNet: Higher level network
-            LowerNet : Lower level Network 
-        """
+        
         self._higherNet = higherNet
         self._lowerNet  = LowerNet
         self.__check_network_order__()
@@ -227,7 +233,6 @@ class InitNetwork:
         return self._lowerNet.bus.groupby('vn_kv').get_group(20.6)
          
         
-    
     ###  Define getter    ------------------------------------------------------------------
     def get_higherNet(self):
         return self._higherNet
@@ -244,12 +249,192 @@ class InitNetwork:
     def get_lowerNet_hv_bus_df(self):
         return self.__lowerNet_hv_bus_df__()
     
+
+
+        
+        
+class SensAnlysisResults:
+    """
+    Initiate the Sensitivity analysis with the folder_location
     
+    Parameters:
+    ------------
+    folder_location: (Str)
+        Location of the folder where the results of the sensitivity analysis are stored
+    
+    """
+    
+    def __init__(self, folder_location):
+        self.folder_location = folder_location
+        self.files_in_folder_list = os.listdir(self.folder_location) 
+        self.plkFiles_in_folder_list = self.__extractPlkFiles__()
+        self.__check_fileName_Format__()
+        self.sortedPlkFiles_in_folder_list = self.__sort_plkFiles_in_folder__()
+        
+        
+    def __check_fileName_Format__(self):
+        # Check if the files name are in the expected format. The Expected format ougth to be 
+        # modelName_btRangeName_SimNumber.plk such that the split length ==3 
+        len_splited = len(self.plkFiles_in_folder_list[0].split('_'))
+        
+        if len_splited > 3: 
+            raise Exception('The *.plk files in '+ self.folder_location+'are not in the expected format. \n'
+                            +'\t   Make sure they are named such as modelName_btRangeName_SimNumber.plk')
+    
+    def __extractPlkFiles__(self):
+        # Extract only the plk files in folderlocation
+        plk_files_list = [cur_file for cur_file in self.files_in_folder_list if cur_file.endswith('.plk')]
+        return plk_files_list;
+    
+
+    def __sort_plkFiles_in_folder__(self):
+        
+        first_plkFile_in_folder_name = self.plkFiles_in_folder_list[0]
+                
+        # cur_file.split('_')[-1] is used to get the the last elm wich is somethink like 'n.plk' 
+        #                                                                          where  n is an integer 
+        files_indexAndExtenxion_list = [cur_file.split('_')[-1] for cur_file in self.plkFiles_in_folder_list] 
+        
+        # Extract the files index and sort them in ascending order
+        # file_index.split('.')[0] is used to get the file index i.e,  || n where  n is an integer 
+        sorted_index = np.sort( [int(file_index.split('.')[0]) for file_index in files_indexAndExtenxion_list
+                                ] )
+        
+        # Separate first file in folder name
+        self.prediction_model_name, bt_range_name, _ = first_plkFile_in_folder_name.split('_')  
+        
+        # Create a new list spaning from n to the total number of element in plkFiles_in_folder_list
+        files_in_folder_list_out = [ self.prediction_model_name+'_'+bt_range_name+'_'+str(elm)+'.plk' 
+                                    for elm in sorted_index ]
+        
+        return files_in_folder_list_out
+          
+        
+        
+    def in_data_frame(self, end_date=None):
+        """
+        Transform all the saved results from multivariate simulation in a dataframe where each element 
+        is the  curtailed energy for that particular simulation. The df's index represent the variation 
+        of the maximum output of the controlled HT producer while the columns represent the added BT
+        production in the network.
+        
+        
+        Parameters:
+        -----------
+        end_date: (str) optional
+            Last day (not included) to consider in the testing set for the simulation. 
+            If the argument `is given, the curtailed energy (each element of the df) considers the 
+            simulation up to the given date. 
+            else the whole data is considered
+        
+        """
+        res_dict = {} # Dictionary to save variables
+        
+        for curFileName in self.sortedPlkFiles_in_folder_list:
+            cur_file_data = joblib.load(self.folder_location+curFileName)  # Load files
+            cur_file_data_keys_list =list(cur_file_data.keys())            # Get keys names in the current file
+            energy_curt_list  = []                                         # Create an energy list 
+
+            for cur_key in cur_file_data_keys_list:  # for each element in the loaded dictionary
+                data_df = cur_file_data[cur_key]['Power Sgen']
+                
+                # data_df.iloc[:,0] => Power injected when there is  no control
+                # data_df.iloc[:,1] => Power injected using current controler
+                if end_date is None:
+                    power_curt = (data_df.iloc[:,0] - data_df.iloc[:,1]).sum()   
+                else : 
+                    mask_period_interest = data_df.index <= end_date
+                    power_curt = (data_df[mask_period_interest].iloc[:,0] 
+                                  - data_df[mask_period_interest].iloc[:,1]).sum()   
+                    
+                energy_curt_list.append( power_curt*Δt ) 
+                
+                
+            col_name = cur_file_data_keys_list[0].split()[0] 
+            res_dict.update({col_name: energy_curt_list})
+           
+        # Create index name for the resulting dataframe
+        df_index = [key.split()[1].split('=')[1] for key in cur_file_data_keys_list]
+        
+        # Crete resulting dataframe
+        self.res_df = pd.DataFrame(res_dict, index=df_index)
+        
+#         # Rename column of  resulting dataframe
+#         self.res_df.columns = [elm.split('=')[1] for elm in self.res_df.columns]
+         
+        return self.res_df
+        
+    
+    def print_sorted_filesNames(self): 
+        print(self.plkFiles_in_folder_list)
+
+    
+    def plot_heatmap(self, fig_params=None, 
+                     contour_color='yellow', 
+                     contour_level=np.arange(0,700,100), 
+                     colmap='twilight', 
+                     show_ylabel=False, 
+                     show_cbar=True, 
+                     show_contour=True, 
+                     anotation = False,):
+        
+        # Check whether res_df is already defined i.e self.in_data_frame() 
+        # is already executed once. If yes, thre is no exception, otherwise
+        # execute the funcction
+        try:
+            getattr(self,'res_df')   
+        except AttributeError:
+            self.res_df = self.in_data_frame()
+        
+        # if fig_params is not given plot the heatmap in a new figure otherwise fig_params must 
+        # be an axe from plt.subplots()
+        # TODO Verify if fig_params is actualy an axe and issue an error in the contrary
+        if fig_params == None:
+            fig, axx = plt.subplots(figsize=(10,6), dpi=100)
+        else:
+            axx = fig_params
+            
+
+        x_contours = range(len(self.res_df.columns))
+        y_contours = range(len(self.res_df.index))
+        
+        if show_contour: 
+            cntr = axx.contour(x_contours, y_contours, 
+                                    self.res_df.iloc[::-1,:],
+                                    levels = contour_level,
+                                    colors=contour_color,
+                                    linewidths=1 ) 
+            # Contour lables
+            axx.clabel(cntr, fmt='%1.0f',inline_spacing=10,fontsize=10)
+
+        # colorbar kwargs 
+        clbar_kwargs = dict (label = "Curtailed Energy (MWh/Year)", anchor=(0,.5), shrink=0.7)
+        
+        # anotation kwargs
+        annot_kw = dict(size=10)
+        
+        # actual plot()
+        sbn.heatmap(self.res_df.iloc[::-1,:],
+                    ax=axx, 
+                    annot_kws=annot_kw,
+                    fmt='.0f', 
+                    lw=0.,
+                    annot=anotation,
+                    cbar = show_cbar,
+                    cbar_kws=clbar_kwargs, 
+                    cmap=colmap)
         
         
         
-        
+        if show_cbar & show_contour: 
+            # axx collection[7] contains the colorbar
+            axx.collections[7].colorbar.add_lines(cntr)
 
 
+        axx.set( 
+            xlabel ='BT Production increase Variation (Mwh)', 
+            title = self.prediction_model_name );
         
+        if show_ylabel: 
+            axx.set( ylabel ='P0100 Maximum Prod (MWh)',  );  
         
