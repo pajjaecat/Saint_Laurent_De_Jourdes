@@ -1,11 +1,12 @@
 # List of function used in my code
 
-import pandapower, pandas, numpy
+import pandapower, pandas, numpy, ipyparallel
 from tqdm import tqdm  # Profiling
 
 pd = pandas
 np = numpy 
 pp = pandapower
+ipp = ipyparallel
 ###############################          Variables       #########################################
 
 # Create an attribute list to use in functions
@@ -26,28 +27,31 @@ py_folder = 'py_files/'
 
 train_split_date = '2021 12 31 23:50' # Date of training+Validation split data Lower bond 
 trainVal_split_date = '2021 06 01'     # lower date to split training and validation data
+testSet_end_date = '2022 06 02'
+
 
 ##############################         FUNCTIONS          #########################################
 
-def readAndReshape_input(f_name, folder_name=excel_folder, n_row2read=None):
+def readAndReshape_excelFile(f_name, folder_name=excel_folder, n_row2read=None):
     """
-Read and reshape in a one dimension list the file given by the input 
+Read and reshape in a one dimension array (that is returned) the excel file given by f_name
 
 
 Parameters: 
 -----------
-'f_name': String
+f_name: str
     Name of the file to load (with the correct extension)
- n_row2_skip : Int (default=0) 
+folder_name: str
+    Location of the folder where the file is present
+n_row2_skip : Int (default=0) 
      Numbers of rows to skip from the starting of the read file.
-Output:
--------
-    Data of the input file reshaped in a unique list
 
     """
 
     filename = f"{folder_name}{f_name}"
-    cols_to_read = range(2, 8)  # Define index of columns to read
+    cols_to_read = range(2, 8)  # Define index of columns to read 
+                                # 0 10 20 30 40 50 
+                                # Where the six collumns to read represent a period.
     input_data = pandas.read_csv(filename,
                                  header=None,
                                  sep=";",
@@ -400,66 +404,6 @@ pred_model: String
 
 
 
-# ___________________________________________________________________________________________________________________________________
-# ----------------------------------------------------------------------------------------------------------------------------------
-# ___________________________________________________________________________________________________________________________________
-
-def extract_par_results(parallel_result, df_prodHT):
-    """
-Extract and save the result of the parallel computation in a dataframe that is output
-
-Parameters: 
---------------
-parallel_result: ipyparallel.client.asyncresult.AsyncMapResult
-    Output given by dview.gather('var_name') where var_name is the name of the
-    list comprehension used to run the parallel computing.
-df_prodHT: Dataframe
-    Dataframe containing data of all the HT producers in the network
-
-
-Output:
----------
-Dataframe as:
-    max_vm_pu : Maximum voltage recorded over all the bus at the instant given 
-    by the df.index
-    Other columns : THe injected power of the respective HT producers.
-
-
-    """
-
-    # Get all the elements from the parallel result in a list
-    # elm[0]   : Maximum voltage on all the line 
-    # elm[1][0]: Power injected into the network by the first HT producer 
-    # ...
-    # elm[1][n]: Power injected into the network by the last HT producer i.e. P0100 
-    # elm[2]   : Period index associated to all the previous output variable
-
-    # elm[0] can either be a list of [max_vm_pu_pf : max voltage  before opf
-    #                                 max_vm_pu : maximum voltage after opf] 
-    # or a single float which is  max_vm_pu : maximum voltage after opf. 
-    # See the function run_powerflow_at (*args, ofp_status='both', pred_model= 'Pers')
-    if type(parallel_result[0][0]) is list: 
-        sep_list = [(*elm[0], *elm[1], elm[2]) for elm in parallel_result]
-        # Create a colums using 'vm_pu_max' and add the HT producers name
-        colls = ['max_vm_pu_pf', 'max_vm_pu'] + df_prodHT.columns.to_list()
-    else:
-        sep_list = [(elm[0], *elm[1], elm[2]) for elm in parallel_result]
-        # Create a colums using 'vm_pu_max' and add the HT producers name
-        colls = ['max_vm_pu'] + df_prodHT.columns.to_list()
-            
-    
-    data_input = np.array(np.array(sep_list)[:, :-1], dtype=float)
-    index_list = np.array(sep_list)[:, -1]
-
-    # create new  dataframe based on previous unpack data
-    df = pd.DataFrame(data=data_input, index=index_list, columns=colls)
-
-    # return the newly create dataFrame with the index sorted 
-    return df.sort_index()
-
-
-
-
 
 # ___________________________________________________________________________________________________________________________________
 # ----------------------------------------------------------------------------------------------------------------------------------
@@ -738,3 +682,209 @@ new_p0100_df: panda dataframe
     return new_p0100_df, bin_thresh_df
 
 
+
+
+
+
+
+
+
+def upscale_bt_ht_prod(prod_hv2upscale_df, prob_bt2upscale_df, 
+                       P0100_max, sum_max_p_mw_StLaurent_prodBT,
+                       cur_max_hvProd:int=0, coef_add_bt:int=0 ):
+    """
+Upscale  both the controled HT producer (P0100) in the lower network (civeaux) and the total BT 
+production in the upper network (Saint laurent de Jourdes). THis mean the BT producer on the 
+lower network receive only a fraction of the added BT production. 
+See function upscale_bt_ht_prod() for the version of the function where the BT producer receive all the Added BT prod
+
+
+Parameters: 
+-----------
+prod_hv2upscale_df: pd.dataframe
+    dataframe of the hV prod to upscale i.e. P0100
+prob_bt2upscale_df: pd.dataframe 
+    dataframe of the total LV to increase i.e. Prod_BT
+cur_max_hvProd: Int (default=0) 
+    Value of maximum output Power of the HV producer in Mw
+coef_add_bt : Int (default=0) 
+    Value of the added output power for all the LV producers in Mw
+     
+Output:
+-------
+    The upscaled version of the HV producer and LV
+    
+    """
+
+        
+    ###  ----------- Upscale P0100 the controlable HT producer  ---------------  ###
+    prodHT_P0100_1mw_df = prod_hv2upscale_df/P0100_max      # Rescale the total HT production for 1mw
+    upscaled_prodHT_P0100_df = cur_max_hvProd*prodHT_P0100_1mw_df   # Redefine the HT production based on the rescale
+
+
+    ###  ----------- upscale BT production ---------------  ###
+    # Rescale the total BT production for 1mw
+    prod_bt_total_1mw_df = prob_bt2upscale_df/sum_max_p_mw_StLaurent_prodBT
+    
+    #Increase Bt production by the coeef_add_bt
+    upscaled_prod_bt_total_df = prob_bt2upscale_df + coef_add_bt*prod_bt_total_1mw_df  
+    upscaled_prod_bt_total_df.columns = ['Prod_BT']
+    
+    return upscaled_prodHT_P0100_df, upscaled_prod_bt_total_df
+
+
+
+
+
+
+
+def createDict_prodHtBt_Load(df_pred_in, 
+                             cur_max_hvProd, 
+                             coef_add_bt, 
+                             sum_max_p_mw_StLaurent_prodBT,
+                             P0100_max=4.):
+    """
+    Create a dictionary that will be send to the local space of the parallele engines.
+    
+    
+    Parameters: 
+    -----------
+    df_pred_in: pd.dataframe
+        Dataframe (Predicted values) of Total lower voltage producer, load demand and all 
+        the Hihger voltage producer in lower level network.
+    cur_max_hvProd: int
+        Value of maximum output Power of the controlled HV producer in Mw
+    coef_add_bt : Int (default=0) 
+        Value of the added output power for all the LV producers in Mw
+    sum_max_p_mw_StLaurent_prodBT:
+        .....
+    P0100_max: (int)
+        Maximum output value in Mw of the controled producer
+
+
+    Outputs:
+    --------
+    dict_df_sgenLoad: dict of dataframe
+        keys1: 'df_prodHT' 
+            Dataframe containing the upscaled (based on cur_max_hvProd) pv power of the 
+            Hihger voltage  producers in lower level network.
+        keys2: 'df_prod_bt_total' 
+            Dataframe of the upscaled (based on coef_add_bt) total pv power of all lower
+            voltage producer in the lower network
+        keys3: 'df_cons_total'
+            Dataframe of the total load demand (consumption) in the lower level network
+            
+
+    """
+    
+    
+    df_pred = df_pred_in.copy(deep=True) # Create a copy of the input dataframe
+    
+    df_prodHT = df_pred.iloc[:, 2:]
+    df_prodHT.columns = ['P0013','P0018','P0100'] # Rename column 
+    
+    # Upscale P0100 and the BT production
+    df_prodHT.P0100, df_prod_bt_total = upscale_bt_ht_prod(df_prodHT[['P0100']], df_pred[['Prod_BT']], 
+                                                           P0100_max, sum_max_p_mw_StLaurent_prodBT, 
+                                                           cur_max_hvProd, coef_add_bt)
+
+    # Define consumption df
+    df_cons_total = df_pred.iloc[:,[0]]
+    df_cons_total.columns = ['Cons']
+
+    # Define a dict 
+    dict_df_sgenLoad = dict({'df_prodHT':df_prodHT, 
+                             'df_prod_bt_total':df_prod_bt_total, 
+                             'df_cons_total':df_cons_total } )
+    
+    return dict_df_sgenLoad
+
+
+
+def robustPersistence(df_out_block_pf_opf:pandas.core.frame.DataFrame , 
+                      df_P0100_no_control: pandas.core.frame.DataFrame,
+                      cur_max_hvProd: float, 
+                      P0100_max: int , 
+                      vm_mu_max: float):
+    
+    """
+    Implement Robust persistence by replacing the persistence P0100 by the 
+    no control P0100 when no voltage rise above the kdefined threshold is detected. 
+    Replacement is done in place i.e. in the df_out_block_pf_opf 
+    
+    Parameters
+    -----------
+    df_out_block_pf_opf: (Dataframe)
+        Output of the block pf opf
+    df_P0100_no_control : Dataframe
+        Dataframe of P0100 with no control
+    cur_max_hvProd: int
+        Value of maximum output Power of the HV producer in Mw
+    P0100_max: (int)
+        Maximum output value in Mw of the controled producer
+    vm_mu_max (Float)
+        Threshold of voltage rise authorised
+    """
+    # create new period index mask spaning from 08Am to 6PM
+    per_index2 = df_out_block_pf_opf.index.to_timestamp().to_series().between_time('07:10',
+                                                                         '18:50').index.to_period('10T')
+    
+    # Create a new df for P0100 
+    df_p0100_pers_improved = pd.DataFrame(index=per_index2, columns=['P0100_Pers_Imp'])
+    
+     # Get into the dataframe data of P0100 When there is no control
+    df_p0100_pers_improved.loc[per_index2,['P0100_Pers_Imp'] ] = (df_P0100_no_control.loc[per_index2].P0100
+                                                                  *cur_max_hvProd/P0100_max)
+    
+    # Get a mask for the periods where a voltage rise above the threshold is predicted 
+    mask_vrise_per = df_out_block_pf_opf.loc[per_index2, 'max_vm_pu_pf']>vm_mu_max
+       
+    # Replace the values of periods given by the mask by the value of P0100 given by the persistence model
+    df_p0100_pers_improved[mask_vrise_per] = df_out_block_pf_opf.loc[per_index2].loc[mask_vrise_per,['P0100']]
+
+    # Replace the values of P0100 in df_out_block_pf_opf
+    df_out_block_pf_opf.loc[per_index2, ['P0100']] = df_p0100_pers_improved.loc[per_index2, 'P0100_Pers_Imp']  
+
+
+    
+    
+    
+def block_prod(df_out_block_pf_opf: pandas.core.frame.DataFrame, 
+               df_P0100_no_control: pandas.core.frame.DataFrame, 
+               cur_max_hvProd: float, 
+               P0100_max: int, 
+               starting_index: int = 0 ):
+    """
+    Implement bloc prod. Modify in place the input dataframe df_out_block_pf_opf
+    
+    Parameters:
+    -----------
+    df_out_block_pf_opf: (Dataframe)
+        Output of the block pf opf that has been send to the robust persitence
+    df_P0100_no_control : Dataframe
+        Dataframe of P0100 with no control
+    cur_max_hvProd: int
+        Value of maximum output Power of the HV producer in Mw
+    P0100_max: (int)
+        Maximum output value in Mw of the controled producer
+    starting_index: Starting index (optional), default to zero
+        Important to use this starting index and set it to the lenght of a day in the case 
+        of the RNN. This is due to the fact that the prediction needs a whole day of data 
+        to be produced. Especially the first prediction must be that of the the first index
+        of the second day of the testing set since the whole first day (of the testing set)
+        data is used .    
+    
+    """
+    
+    per_index2 = df_out_block_pf_opf.index.to_timestamp().to_series().between_time('07:10',
+                                                                                   '18:50').index.to_period('10T')
+    
+    df_P0100_no_control_upscaled = (df_P0100_no_control.loc[per_index2[starting_index:],'P0100']
+                                    *cur_max_hvProd/P0100_max)
+    
+    df_P0100_controled = df_out_block_pf_opf.loc[per_index2[starting_index:], 'P0100']
+    
+    df_out_block_pf_opf.loc[per_index2[starting_index:], ['P0100']] = (np.minimum(df_P0100_no_control_upscaled,
+                                                                                  df_P0100_controled)
+                                                                      )
+        
